@@ -62,6 +62,7 @@ const UI = {
     this.renderDayTabs();
     this.renderDashboard();
     this.renderGroceryList();
+    this.renderGroceryAisleOptions();
     this.renderBatchPrepGuide();
     this.setupEventListeners();
   },
@@ -109,7 +110,7 @@ const UI = {
       const isSelected = day === currentDay;
       const dayData = weeklyPlan[day] || {};
       const completedCount = Object.values(dayData.completed || {}).filter(Boolean).length;
-      const dayTotals = NutritionEngine.calculateDayTotals(dayData);
+      const dailyCalories = NutritionEngine.calculateDayTotals(dayData).calories;
 
       return `
         <button onclick="UI.selectDay('${day}')" 
@@ -119,7 +120,7 @@ const UI = {
               : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-emerald-50 dark:hover:bg-gray-700/60 border border-gray-100 dark:border-gray-700'
           }">
           <span class="text-xs uppercase tracking-wider opacity-80">${day.slice(0, 3)}</span>
-          <span class="text-base font-bold my-0.5">${dayTotals.calories} <span class="text-[10px] font-normal opacity-75">kcal</span></span>
+          <span class="text-base font-bold my-0.5">${dailyCalories} <span class="text-[10px] font-normal opacity-75">kcal</span></span>
           <div class="flex items-center gap-1 mt-1">
             ${[0, 1, 2, 3].map(i => `
               <span class="w-1.5 h-1.5 rounded-full ${
@@ -171,6 +172,9 @@ const UI = {
 
     // Render Micronutrient Health Radar / Progress Cards
     this.renderMicronutrients(dayTotals, percentages);
+
+    // Render persistent daily mood check-in
+    this.renderMoodTracker(dayPlan.mood);
   },
 
   // Render individual meal card with high interactivity
@@ -236,6 +240,8 @@ const UI = {
             <div class="flex items-center gap-2 text-xs font-medium text-emerald-300">
               <span>🔥 ${recipe.calories} kcal</span>
               <span>•</span>
+              <span>🍽️ ${recipe.servings} serving${recipe.servings === 1 ? "" : "s"}</span>
+              <span>•</span>
               <span>💰 ${recipe.cost}</span>
               <span>•</span>
               <span>${recipe.difficulty}</span>
@@ -275,6 +281,13 @@ const UI = {
 
           <!-- Action Buttons: View Recipe & Swap -->
           <div class="pt-2 border-t border-gray-100 dark:border-gray-700/60 flex items-center justify-between gap-2">
+            <div class="flex items-center gap-0.5" aria-label="Recipe rating">
+              ${[1, 2, 3, 4, 5].map(star => `
+                <button onclick="UI.rateRecipe('${recipe.id}', ${star})"
+                  class="${star <= rating ? 'text-amber-400' : 'text-gray-300 dark:text-gray-600'} text-sm leading-none"
+                  title="Rate ${star} star${star === 1 ? '' : 's'}">${star <= rating ? '★' : '☆'}</button>
+              `).join("")}
+            </div>
             <button onclick="UI.openRecipeModal('${recipe.id}')" 
               class="flex-1 py-2 px-3 rounded-xl bg-gray-100 dark:bg-gray-700 hover:bg-emerald-600 hover:text-white dark:hover:bg-emerald-600 text-gray-700 dark:text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
@@ -313,6 +326,12 @@ const UI = {
   toggleFavorite: function(recipeId) {
     this.playSound("click");
     AppState.toggleFavorite(recipeId);
+    this.renderDashboard();
+  },
+
+  rateRecipe: function(recipeId, rating) {
+    this.playSound("click");
+    AppState.rateRecipe(recipeId, rating);
     this.renderDashboard();
   },
 
@@ -439,6 +458,23 @@ const UI = {
     this.renderDashboard();
   },
 
+  renderMoodTracker: function(selectedMood) {
+    document.querySelectorAll("[data-mood]").forEach(button => {
+      const isSelected = button.dataset.mood === selectedMood;
+      button.classList.toggle("ring-2", isSelected);
+      button.classList.toggle("ring-emerald-500", isSelected);
+      button.classList.toggle("bg-emerald-100", isSelected);
+      button.classList.toggle("dark:bg-emerald-950/60", isSelected);
+    });
+  },
+
+  setDailyMood: function(mood) {
+    this.playSound("click");
+    const day = AppState.state.currentDay;
+    AppState.setDailyMood(day, mood);
+    this.renderMoodTracker(mood);
+  },
+
   // Render Comprehensive Micronutrients Card (Vitamins & Minerals)
   renderMicronutrients: function(totals, percentages) {
     const container = document.getElementById("micronutrientsGrid");
@@ -480,6 +516,12 @@ const UI = {
         </div>
       `;
     }).join("");
+
+    const scoreBadge = document.getElementById("micronutrientScoreBadge");
+    if (scoreBadge) {
+      const average = Math.round(micros.reduce((sum, m) => sum + (percentages[m.key] || 0), 0) / micros.length);
+      scoreBadge.textContent = average >= 80 ? "Optimal" : average >= 50 ? "Building" : "Needs attention";
+    }
   },
 
   // Render Grocery Shopping List grouped by Aisle
@@ -509,7 +551,7 @@ const UI = {
               </span>
             </label>
             <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
-              ${item.amount} ${item.unit}
+              ${Number(Number(item.amount).toFixed(2))} ${item.unit}
             </span>
           </li>
         `;
@@ -530,6 +572,28 @@ const UI = {
 
     container.innerHTML = aislesHtml || `<div class="p-8 text-center text-gray-400">Grocery list is empty.</div>`;
     if (countBadge) countBadge.textContent = `${totalItems - checkedItems} remaining (${checkedItems}/${totalItems} checked)`;
+    this.renderGroceryAisleOptions();
+  },
+
+  renderGroceryAisleOptions: function() {
+    const select = document.getElementById("newGroceryAisleSelect");
+    if (!select) return;
+
+    const aisles = Array.from(new Set([
+      ...Object.keys(AppState.state.groceryList),
+      "Fresh Produce",
+      "Dairy & Cheeses",
+      "Dairy & Plant Milks",
+      "Meat & Seafood",
+      "Grains & Cereals",
+      "Pantry & Nuts",
+      "Other"
+    ]));
+
+    const current = select.value;
+    select.innerHTML = aisles.map(aisle =>
+      `<option value="${aisle}" ${aisle === current ? "selected" : ""}>${aisle}</option>`
+    ).join("");
   },
 
   toggleGroceryItem: function(aisle, index) {
@@ -917,7 +981,12 @@ const UI = {
 
     const terms = query ? query.split(",").map(s => s.trim()).filter(Boolean) : ["chicken", "spinach", "egg", "avocado", "oats"];
 
-    const allRecipes = RecipeService.getAll();
+    const profile = AppState.state.profile;
+    const allRecipes = RecipeService.filterRecipes({
+      diet: profile.foodPattern,
+      allergies: profile.allergies,
+      maxTime: profile.maxPrepTime
+    });
     const scored = allRecipes.map(recipe => {
       let matchCount = 0;
       recipe.ingredients.forEach(ing => {

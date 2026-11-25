@@ -110,11 +110,72 @@ class AppStateManager {
   }
 
   loadInitialState() {
+    const savedDefaults = {
+      profile: { ...DEFAULT_PROFILE },
+      presets: PRESET_PROFILES,
+      currentDay: "Monday",
+      groceryList: {},
+      favorites: [],
+      ratings: {},
+      darkMode: false,
+      soundEnabled: true,
+      planCalorieVersion: 2,
+      lastUpdated: new Date().toISOString()
+    };
+
     try {
       const saved = localStorage.getItem(this.storageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return parsed;
+        const profile = { ...savedDefaults.profile, ...(parsed.profile || {}) };
+        const needsCalorieMigration = parsed.planCalorieVersion !== 2;
+        const merged = {
+          ...savedDefaults,
+          ...parsed,
+          profile,
+          presets: Array.isArray(parsed.presets) ? parsed.presets : PRESET_PROFILES,
+          favorites: Array.isArray(parsed.favorites) ? parsed.favorites : [],
+          ratings: parsed.ratings && typeof parsed.ratings === "object" ? parsed.ratings : {}
+        };
+
+        if (!parsed.weeklyPlan) {
+          merged.weeklyPlan = NutritionEngine.generate7DayPlan(profile);
+          merged.groceryList = NutritionEngine.generateGroceryList(merged.weeklyPlan);
+        } else {
+          merged.weeklyPlan = parsed.weeklyPlan;
+          if (!parsed.groceryList) {
+            merged.groceryList = NutritionEngine.generateGroceryList(merged.weeklyPlan);
+          }
+        }
+
+        if (needsCalorieMigration) {
+          merged.weeklyPlan = Object.fromEntries(
+            Object.entries(merged.weeklyPlan).map(([day, dayPlan]) => [
+              day,
+              NutritionEngine.scaleDayToTarget(
+                dayPlan,
+                NutritionEngine.calculateTargetCalories(profile)
+              )
+            ])
+          );
+          const previousGroceryList = merged.groceryList;
+          merged.groceryList = NutritionEngine.generateGroceryList(merged.weeklyPlan);
+          Object.entries(previousGroceryList).forEach(([aisle, items]) => {
+            items.forEach(item => {
+              const generatedItem = merged.groceryList[aisle]?.find(
+                candidate => candidate.name.toLowerCase() === item.name.toLowerCase()
+              );
+              if (generatedItem) {
+                generatedItem.checked = item.checked;
+              } else {
+                merged.groceryList[aisle] = merged.groceryList[aisle] || [];
+                merged.groceryList[aisle].push(item);
+              }
+            });
+          });
+          merged.planCalorieVersion = 2;
+        }
+        return merged;
       }
     } catch (e) {
       console.warn("Could not parse saved state, starting fresh.", e);
@@ -137,6 +198,7 @@ class AppStateManager {
       },
       darkMode: false,
       soundEnabled: true,
+      planCalorieVersion: 2,
       lastUpdated: new Date().toISOString()
     };
   }
@@ -189,17 +251,30 @@ class AppStateManager {
   }
 
   regenerateSingleDay(day) {
-    const tempPlan = NutritionEngine.generate7DayPlan(this.state.profile);
-    if (tempPlan[day]) {
-      this.state.weeklyPlan[day] = tempPlan[day];
-      this.state.groceryList = NutritionEngine.generateGroceryList(this.state.weeklyPlan);
-      this.save();
-    }
-  }
+  const previousDay = this.state.weeklyPlan[day];
+  if (!previousDay) return;
+
+  const tempPlan = NutritionEngine.generate7DayPlan(this.state.profile, {
+    excludeDay: day,
+    previousDay
+  });
+
+  this.state.weeklyPlan[day] = tempPlan[day];
+  this.state.groceryList = NutritionEngine.generateGroceryList(this.state.weeklyPlan);
+  this.save();
+}
 
   swapMeal(day, mealSlot, newRecipe) {
     if (this.state.weeklyPlan[day]) {
-      this.state.weeklyPlan[day][mealSlot] = newRecipe;
+      const targetCalories = NutritionEngine.calculateTargetCalories(this.state.profile);
+      const mealCalories = NutritionEngine.getMealCalorieTargets(targetCalories)[mealSlot];
+      if (mealCalories === undefined) {
+        throw new Error(`Unsupported meal slot: ${mealSlot}`);
+      }
+      this.state.weeklyPlan[day][mealSlot] = NutritionEngine.scaleRecipeToCalories(
+        newRecipe,
+        mealCalories
+      );
       this.state.groceryList = NutritionEngine.generateGroceryList(this.state.weeklyPlan);
       this.save();
     }

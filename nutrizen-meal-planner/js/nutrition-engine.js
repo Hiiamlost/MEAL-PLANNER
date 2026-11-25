@@ -5,6 +5,13 @@
  */
 
 const NutritionEngine = {
+  MEAL_CALORIE_SPLITS: {
+    breakfast: 0.25,
+    lunch: 0.30,
+    dinner: 0.30,
+    snack: 0.15
+  },
+
   // Reference Daily Values (RDA / DV)
   DAILY_VALUES: {
     calories: 2000,
@@ -99,10 +106,73 @@ const NutritionEngine = {
     };
   },
 
+  scaleRecipeToCalories: function(recipe, targetCalories) {
+    if (!recipe || !recipe.calories) return recipe;
+
+    const multiplier = targetCalories / recipe.calories;
+    const scaleValues = values => Object.fromEntries(
+      Object.entries(values || {}).map(([key, value]) => [
+        key,
+        typeof value === "number" ? Number((value * multiplier).toFixed(2)) : value
+      ])
+    );
+
+    return {
+      ...recipe,
+      calories: Math.round(targetCalories),
+      servings: Number(((recipe.servings || 1) * multiplier).toFixed(2)),
+      macros: scaleValues(recipe.macros),
+      micros: scaleValues(recipe.micros),
+      ingredients: (recipe.ingredients || []).map(ingredient => ({
+        ...ingredient,
+        amount: Number((ingredient.amount * multiplier).toFixed(2))
+      }))
+    };
+  },
+
+  getMealCalorieTargets: function(targetCalories) {
+    const slots = Object.entries(this.MEAL_CALORIE_SPLITS);
+    const targets = {};
+    let remainingCalories = Math.round(targetCalories);
+
+    slots.slice(0, -1).forEach(([slot, share]) => {
+      targets[slot] = Math.round(targetCalories * share);
+      remainingCalories -= targets[slot];
+    });
+    targets[slots[slots.length - 1][0]] = remainingCalories;
+
+    return targets;
+  },
+
+  scaleDayToTarget: function(dayPlan, targetCalories) {
+    const scaledPlan = { ...dayPlan };
+    const mealTargets = this.getMealCalorieTargets(targetCalories);
+    for (const [slot, calories] of Object.entries(mealTargets)) {
+      scaledPlan[slot] = this.scaleRecipeToCalories(dayPlan[slot], calories);
+    }
+    return scaledPlan;
+  },
+
   // Generate complete 7-Day Plan from profile & preferences
-  generate7DayPlan: function(profile) {
-    const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-    const plan = {};
+  generate7DayPlan: function(profile, options = {}) {
+    const targetCalories = this.calculateTargetCalories(profile);
+    const mealTargets = this.getMealCalorieTargets(targetCalories);
+    const getSafeMeal = (pool, fallback, previousRecipe, targetCaloriesForMeal) => {
+      const list = pool.length > 0 ? pool : fallback;
+      if (list.length === 0) return null;
+
+      const alternatives = previousRecipe
+        ? list.filter(recipe => recipe.id !== previousRecipe.id)
+        : list;
+      const choices = alternatives.length > 0 ? alternatives : list;
+      const closestChoices = choices
+        .slice()
+        .sort((a, b) => Math.abs(a.calories - targetCaloriesForMeal) - Math.abs(b.calories - targetCaloriesForMeal))
+        .slice(0, Math.min(3, choices.length));
+      const recipe = closestChoices[Math.floor(Math.random() * closestChoices.length)];
+
+      return this.scaleRecipeToCalories(recipe, targetCaloriesForMeal);
+    };
 
     // Filter recipes that meet hard guardrails (allergies & diet)
     const availableBreakfasts = RecipeService.filterRecipes({
@@ -135,17 +205,19 @@ const NutritionEngine = {
     const fallbackD = RecipeService.getByCategory("dinner");
     const fallbackS = RecipeService.getByCategory("snack");
 
-    const getSafeMeal = (pool, fallback, index) => {
-      const list = pool.length > 0 ? pool : fallback;
-      return list[index % list.length];
-    };
+    const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    const plan = {};
 
-    days.forEach((day, idx) => {
+    days.forEach(day => {
+      const previousDay = day === options.excludeDay
+        ? options.previousDay
+        : null;
+
       plan[day] = {
-        breakfast: getSafeMeal(availableBreakfasts, fallbackB, idx),
-        lunch: getSafeMeal(availableLunches, fallbackL, idx + 1),
-        dinner: getSafeMeal(availableDinners, fallbackD, idx + 2),
-        snack: getSafeMeal(availableSnacks, fallbackS, idx),
+        breakfast: getSafeMeal(availableBreakfasts, fallbackB, previousDay?.breakfast, mealTargets.breakfast),
+        lunch: getSafeMeal(availableLunches, fallbackL, previousDay?.lunch, mealTargets.lunch),
+        dinner: getSafeMeal(availableDinners, fallbackD, previousDay?.dinner, mealTargets.dinner),
+        snack: getSafeMeal(availableSnacks, fallbackS, previousDay?.snack, mealTargets.snack),
         completed: {
           breakfast: false,
           lunch: false,

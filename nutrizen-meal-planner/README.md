@@ -34,6 +34,7 @@
 ### 4. Step 05: Dynamic 7-Day Flexible Meal Plan
 - 7 individual days (Monday through Sunday) with daily calorie badges and completion indicator dots.
 - 4 meal slots per day: **Breakfast**, **Lunch**, **Dinner**, and **Snack**.
+- Meal portions are scaled to the user's daily calorie target, with calorie-dense recipe choices and corresponding ingredient quantities.
 - **Interactive Recipe Card**:
   - High-res dish imagery, preparation & cook times, cost indicator, and difficulty.
   - Visual macro pills (Protein, Carbs, Fat, Fiber).
